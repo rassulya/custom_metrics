@@ -1,0 +1,51 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+# rule_files:
+#   - "alert-rules.yml"
+
+# alerting:
+#   alertmanagers:
+#     - static_configs:
+#         - targets: ['alertmanager:9093']
+
+scrape_configs:
+  # Standard exporters
+  - job_name: 'node-exporter'
+    static_configs:
+      - targets: ['node-exporter:9100']
+    scrape_interval: 15s
+
+  - job_name: 'dcgm-exporter'
+    static_configs:
+      - targets: ['dcgm-exporter:9400']
+    scrape_interval: 10s
+
+  # Custom exporters
+  - job_name: 'gpu-process-exporter'
+    static_configs:
+      - targets: ['gpu-exporter:9200']
+    scrape_interval: 30s
+    scrape_timeout: 15s
+
+  - job_name: 'disk-usage-exporter'
+    static_configs:
+      - targets: ['disk-exporter:9201']
+    scrape_interval: 60s
+    scrape_timeout: 30s
+
+  - job_name: 'temp-file-tracker'
+    static_configs:
+      - targets: ['temp-tracker:9202']
+    scrape_interval: 60s
+    scrape_timeout: 30s
+
+  # Monitoring stack itself
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+
+  - job_name: 'grafana'
+    static_configs:
+      - targets: ['grafana:3030']

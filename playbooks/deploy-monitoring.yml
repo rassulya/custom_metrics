@@ -1,0 +1,299 @@
+# playbooks/deploy-monitoring.yml
+---
+# Play 1: Common setup for all nodes
+- name: Common Setup for All Nodes
+  hosts: all
+  become: yes
+  gather_facts: yes
+  
+  vars:
+    monitoring_dir: "/opt/monitoring"
+    docker_compose_file: "docker-compose.yml"
+  
+  tasks:
+    - name: Install required packages (Debian/Ubuntu)
+      package:
+        name:
+          - docker-compose-plugin
+        state: present
+      when: ansible_os_family == "Debian"
+
+    - name: Install required packages (RHEL/CentOS)
+      package:
+        name:
+          - docker-compose-plugin
+        state: present
+      when: ansible_os_family == "RedHat"
+
+    - name: Add user to docker group
+      user:
+        name: "{{ ansible_user }}"
+        groups: docker
+        append: yes
+
+    - name: Create monitoring directory
+      file:
+        path: "{{ monitoring_dir }}"
+        state: directory
+        owner: "{{ ansible_user }}"
+        group: docker
+        mode: '0755'
+
+# Play 2: Deploy exporters on GPU nodes
+- name: Deploy GPU Exporters
+  hosts: gpu_nodes
+  become: yes
+  gather_facts: yes
+  
+  vars:
+    monitoring_dir: "/opt/monitoring"
+  
+  tasks:
+    - name: Check if nvidia-docker2 is installed
+      package_facts:
+        manager: apt
+
+    # - name: Check if containers are running
+    #   command: docker ps -q
+    #   register: running_container_ids
+    #   failed_when: false
+    #   changed_when: false
+
+    # - name: Stop running containers gracefully
+    #   command: docker stop {{ running_container_ids.stdout_lines | join(' ') }}
+    #   when: 
+    #     - running_container_ids.stdout_lines | length > 0
+    #     - "'nvidia-docker2' not in ansible_facts.packages"
+    #   ignore_errors: yes
+
+    # - name: Install NVIDIA Docker runtime
+    #   shell: |
+    #     distribution=$(. /etc/os-release;echo $ID$VERSION_ID)
+    #     curl -s -L https://nvidia.github.io/nvidia-docker/gpgkey | apt-key add -
+    #     curl -s -L https://nvidia.github.io/nvidia-docker/$distribution/nvidia-docker.list | tee /etc/apt/sources.list.d/nvidia-docker.list
+    #     apt-get update && apt-get install -y nvidia-docker2
+    #     systemctl restart docker
+    #   when: 
+    #     - ansible_os_family == "Debian"
+    #     - "'nvidia-docker2' not in ansible_facts.packages"
+    #   become: yes
+
+    # - name: Wait for Docker to be ready
+    #   command: docker info
+    #   retries: 5
+    #   delay: 3
+    #   register: docker_ready
+    #   until: docker_ready.rc == 0
+    #   when: "'nvidia-docker2' not in ansible_facts.packages"
+
+    # - name: Restart previously running containers
+    #   command: docker start {{ item }}
+    #   loop: "{{ running_container_ids.stdout_lines }}"
+    #   when: 
+    #     - running_container_ids.stdout_lines | length > 0
+    #     - "'nvidia-docker2' not in ansible_facts.packages"
+    #   ignore_errors: yes
+
+    - name: Copy GPU node docker-compose file
+      template:
+        src: templates/gpu-node-compose.yml.j2
+        dest: "{{ monitoring_dir }}/docker-compose.yml"
+        owner: "{{ ansible_user }}"
+        group: docker
+        mode: '0644'
+        force: no  
+
+    - name: Copy exporter source code
+      copy:
+        src: "{{ item }}"
+        dest: "{{ monitoring_dir }}/"
+        owner: "{{ ansible_user }}"
+        group: docker
+        mode: '0644'
+        force: no 
+      loop:
+        - ../gpu_process_exporter
+        - ../disk_usage_exporter
+        - ../tmp_file_exporter
+
+    - name: Comprehensive monitoring cleanup
+      block:
+        - name: Stop all Docker Compose services
+          shell: |
+            cd {{ monitoring_dir }}
+            docker compose down --remove-orphans --volumes --timeout 30
+          ignore_errors: yes
+
+        - name: Remove all monitoring containers
+          shell: |
+            docker ps -a --format "{{ "{{" }}.Names{{ "}}" }}" | grep -E "(prometheus|grafana|node-exporter|dcgm|gpu-process|disk-usage|temp-file)" | xargs -r docker rm -f
+          ignore_errors: yes
+
+        - name: Find and kill processes on monitoring ports
+          shell: |
+            for port in 9090 9100 9093 3000 9200 9400; do
+              echo "Checking port $port..."
+              pids=$(lsof -ti:$port 2>/dev/null || true)
+              if [ ! -z "$pids" ]; then
+                echo "Killing processes on port $port: $pids"
+                echo "$pids" | xargs -r kill -9
+              fi
+            done
+          become: yes
+          ignore_errors: yes
+
+        - name: Wait for ports to be available
+          wait_for:
+            port: "{{ item }}"
+            host: localhost
+            state: stopped
+            timeout: 10
+          loop: [9090, 9100, 9093, 3000, 9200, 9400]
+          ignore_errors: yes
+
+      rescue:
+        - name: Show what's still using the ports
+          shell: |
+            echo "=== Port usage after cleanup ==="
+            for port in 9090 9100 9093 3000 9200 9400; do
+              echo "Port $port:"
+              ss -tulpn | grep :$port || echo "  Not in use"
+            done
+          ignore_errors: yes
+
+    - name: Start monitoring services fresh
+      shell: |
+        cd {{ monitoring_dir }}
+        docker compose up -d --build --force-recreate
+      become_user: "{{ ansible_user }}"
+
+    - name: Verify services are running
+      shell: |
+        cd {{ monitoring_dir }}
+        docker compose ps
+      register: compose_status
+
+    - name: Show service status
+      debug:
+        var: compose_status.stdout_lines
+
+# Play 3: Deploy Prometheus and Grafana on master node
+- name: Deploy Master Monitoring
+  hosts: monitoring_master
+  become: yes
+  gather_facts: yes
+  
+  vars:
+    monitoring_dir: "/opt/monitoring"
+    grafana_port: 3000
+    prometheus_port: 9090
+    # alertmanager_port: 9093
+      
+  tasks:
+    - name: Copy master node docker-compose file
+      template:
+        src: templates/master-node-compose.yml.j2
+        dest: "{{ monitoring_dir }}/docker-compose.yml"
+        owner: "{{ ansible_user }}"
+        group: docker
+        mode: '0644'
+
+    - name: Create Prometheus config directory
+      file:
+        path: "{{ monitoring_dir }}/prometheus"
+        state: directory
+        owner: "{{ ansible_user }}"
+        group: docker
+        mode: '0755'
+
+    - name: Create Grafana data directory
+      file:
+        path: "{{ monitoring_dir }}/grafana/data"
+        state: directory
+        owner: "472"  # Grafana user ID
+        group: docker
+        mode: '0755'
+
+    - name: Copy Prometheus configuration
+      template:
+        src: templates/prometheus.yml.j2
+        dest: "{{ monitoring_dir }}/prometheus/prometheus.yml"
+        owner: "{{ ansible_user }}"
+        group: docker
+        mode: '0644'
+
+    - name: Copy Grafana provisioning
+      copy:
+        src: "{{ item }}"
+        dest: "{{ monitoring_dir }}/grafana/"
+        owner: "472"
+        group: docker
+        mode: '0644'
+        directory_mode: '0755'
+      loop:
+        - templates/grafana/
+
+    - name: Comprehensive monitoring cleanup
+      block:
+        - name: Stop all Docker Compose services
+          shell: |
+            cd {{ monitoring_dir }}
+            docker compose down --remove-orphans --volumes --timeout 30
+          ignore_errors: yes
+
+        - name: Remove all monitoring containers
+          shell: |
+            docker ps -a --format "{{ "{{" }}.Names{{ "}}" }}" | grep -E "(prometheus|grafana|node-exporter)" | xargs -r docker rm -f
+          ignore_errors: yes
+
+        - name: Find and kill processes on monitoring ports
+          shell: |
+            for port in {{ grafana_port }} {{ prometheus_port }} 9100; do
+              echo "Checking port $port..."
+              pids=$(lsof -ti:$port 2>/dev/null || true)
+              if [ ! -z "$pids" ]; then
+                echo "Killing processes on port $port: $pids"
+                echo "$pids" | xargs -r kill -9
+              fi
+            done
+          become: yes
+          ignore_errors: yes
+
+        - name: Wait for ports to be available
+          wait_for:
+            port: "{{ item }}"
+            host: localhost
+            state: stopped
+            timeout: 10
+          loop: 
+            - "{{ grafana_port }}"
+            - "{{ prometheus_port }}"
+            # - "{{ alertmanager_port }}"
+            - 9100
+          ignore_errors: yes
+
+    - name: Start monitoring services fresh
+      shell: |
+        cd {{ monitoring_dir }}
+        docker compose up -d --build --force-recreate
+      become_user: "{{ ansible_user }}"
+
+    - name: Verify services are running
+      shell: |
+        cd {{ monitoring_dir }}
+        docker compose ps
+      register: master_compose_status
+
+    - name: Show service status
+      debug:
+        var: master_compose_status.stdout_lines
+
+    - name: Display access URLs
+      debug:
+        msg:
+          - "🌐 Grafana Dashboard: http://{{ ansible_host }}:{{ grafana_port }}"
+          - "📊 Prometheus: http://{{ ansible_host }}:{{ prometheus_port }}"
+          - ""
+          - "📋 Default Grafana credentials:"
+          - "   Username: admin"
+          - "   Password: admin123 (change on first login)"

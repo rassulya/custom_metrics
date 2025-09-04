@@ -1,0 +1,169 @@
+{
+  "dashboard": {
+    "id": null,
+    "title": "GPU Cluster Monitoring",
+    "tags": ["gpu", "cluster", "monitoring"],
+    "timezone": "browser",
+    "panels": [
+      {
+        "id": 1,
+        "title": "GPU Utilization by Node",
+        "type": "stat",
+        "targets": [
+          {
+            "expr": "gpu_utilization_percent",
+            "legendFormat": "{{instance}} - GPU {{gpu_id}}",
+            "refId": "A"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "unit": "percent",
+            "min": 0,
+            "max": 100,
+            "thresholds": {
+              "steps": [
+                {"color": "green", "value": null},
+                {"color": "yellow", "value": 70},
+                {"color": "red", "value": 90}
+              ]
+            }
+          }
+        },
+        "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0}
+      },
+      {
+        "id": 2,
+        "title": "GPU Memory Usage",
+        "type": "timeseries",
+        "targets": [
+          {
+            "expr": "gpu_memory_used_bytes / gpu_memory_total_bytes * 100",
+            "legendFormat": "{{instance}} - GPU {{gpu_id}}",
+            "refId": "A"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "unit": "percent",
+            "min": 0,
+            "max": 100
+          }
+        },
+        "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0}
+      },
+      {
+        "id": 3,
+        "title": "GPU Process Memory Usage",
+        "type": "table",
+        "targets": [
+          {
+            "expr": "gpu_process_memory_bytes",
+            "legendFormat": "{{instance}} - {{user}} - {{command}}",
+            "refId": "A",
+            "format": "table"
+          }
+        ],
+        "transformations": [
+          {
+            "id": "organize",
+            "options": {
+              "excludeByName": {
+                "__name__": true,
+                "job": true
+              },
+              "renameByName": {
+                "instance": "Node",
+                "gpu_id": "GPU",
+                "user": "User", 
+                "command": "Process",
+                "pid": "PID",
+                "Value": "Memory (Bytes)"
+              }
+            }
+          }
+        ],
+        "gridPos": {"h": 8, "w": 24, "x": 0, "y": 8}
+      },
+      {
+        "id": 4,
+        "title": "GPU Temperature",
+        "type": "timeseries",
+        "targets": [
+          {
+            "expr": "gpu_temperature_celsius",
+            "legendFormat": "{{instance}} - GPU {{gpu_id}}",
+            "refId": "A"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "unit": "celsius",
+            "thresholds": {
+              "steps": [
+                {"color": "green", "value": null},
+                {"color": "yellow", "value": 70},
+                {"color": "red", "value": 85}
+              ]
+            }
+          }
+        },
+        "gridPos": {"h": 8, "w": 12, "x": 0, "y": 16}
+      },
+      {
+        "id": 5,
+        "title": "GPU Power Consumption",
+        "type": "timeseries",
+        "targets": [
+          {
+            "expr": "gpu_power_watts",
+            "legendFormat": "{{instance}} - GPU {{gpu_id}}",
+            "refId": "A"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "unit": "watt"
+          }
+        },
+        "gridPos": {"h": 8, "w": 12, "x": 12, "y": 16}
+      },
+      {
+        "id": 6,
+        "title": "Disk Usage by Node",
+        "type": "timeseries", 
+        "targets": [
+          {
+            "expr": "disk_usage_bytes",
+            "legendFormat": "{{instance}} - {{path}}",
+            "refId": "A"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "unit": "bytes"
+          }
+        },
+        "gridPos": {"h": 8, "w": 12, "x": 0, "y": 24}
+      },
+      {
+        "id": 7,
+        "title": "Temporary Files Count",
+        "type": "stat",
+        "targets": [
+          {
+            "expr": "temp_files_count",
+            "legendFormat": "{{instance}} - {{path}}",
+            "refId": "A"
+          }
+        ],
+        "gridPos": {"h": 8, "w": 12, "x": 12, "y": 24}
+      }
+    ],
+    "time": {
+      "from": "now-1h",
+      "to": "now"
+    },
+    "refresh": "10s"
+  }
+}
