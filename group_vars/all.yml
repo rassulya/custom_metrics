@@ -1,0 +1,27 @@
+# Network configuration
+docker_network: cmstack_net
+base_dir: /opt/cmstack
+
+# Service ports
+prometheus_port: 39091
+grafana_port: 33331
+node_exporter_port: 39100
+
+exporter_ports:
+  gpu: 9200
+  disk: 9201
+  tmp: 9202
+
+# Grafana credentials
+grafana_admin_user: admin
+grafana_admin_password: monitoring123
+
+# Container image versions
+node_exporter_version: v1.6.1
+prometheus_version: v2.45.0
+grafana_version: 10.1.0
+
+# Slave nodes for Prometheus scraping
+slave_nodes:
+  - host: "{{ hostvars['slave_node_01']['ansible_host'] }}"
+    name: slave_node_01

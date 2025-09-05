@@ -1,0 +1,30 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+
+{% for node in slave_nodes %}
+  - job_name: '{{ node.name }}-gpu-process'
+    static_configs:
+      - targets: ['{{ node.host }}:{{ exporter_ports.gpu }}']
+    scrape_interval: 30s
+
+  - job_name: '{{ node.name }}-disk-usage'
+    static_configs:
+      - targets: ['{{ node.host }}:{{ exporter_ports.disk }}']
+    scrape_interval: 30s
+
+  - job_name: '{{ node.name }}-tmp-files'
+    static_configs:
+      - targets: ['{{ node.host }}:{{ exporter_ports.tmp }}']
+    scrape_interval: 30s
+
+  - job_name: '{{ node.name }}-node'
+    static_configs:
+      - targets: ['{{ node.host }}:{{ node_exporter_port }}']
+    scrape_interval: 15s
+{% endfor %}

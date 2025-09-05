@@ -1,0 +1,83 @@
+- name: Check current Docker Compose version
+  command: docker compose version
+  register: compose_check
+  failed_when: false
+  changed_when: false
+
+- name: Extract Docker Compose version number
+  set_fact:
+    compose_version: "{{ compose_check.stdout | regex_search('v([0-9]+\\.[0-9]+\\.[0-9]+)', '\\1') | first }}"
+  when: compose_check.rc == 0 and compose_check.stdout is defined
+  failed_when: false
+
+- name: Display current Docker Compose status
+  debug:
+    msg: "Docker Compose: {{ 'v' + compose_version if compose_version is defined else 'Not installed' }}"
+
+- name: Install Docker Compose v2.21.0
+  block:
+    - name: Create Docker CLI plugins directory
+      file:
+        path: /usr/libexec/docker/cli-plugins
+        state: directory
+        mode: '0755'
+        owner: root
+        group: root
+
+    - name: Download Docker Compose v2.21.0
+      get_url:
+        url: "https://github.com/docker/compose/releases/download/v2.21.0/docker-compose-linux-x86_64"
+        dest: /usr/libexec/docker/cli-plugins/docker-compose
+        mode: '0755'
+        owner: root
+        group: root
+        force: yes
+
+    - name: Verify installation
+      command: docker compose version
+      register: new_compose_version
+      changed_when: false
+
+    - name: Display installed version
+      debug:
+        msg: "Docker Compose installed: {{ new_compose_version.stdout_lines[0] }}"
+
+  when: compose_check.rc != 0 or (compose_version is defined and compose_version is version('2.18.0', '<'))
+
+- name: Skip installation - version already satisfies requirement
+  debug:
+    msg: "Docker Compose v{{ compose_version }} already satisfies requirement (>= 2.18.0)"
+  when: compose_version is defined and compose_version is version('2.18.0', '>=')
+- name: Install additional required packages
+  apt:
+    name:
+      - curl
+      - net-tools
+      - jq
+    state: present
+
+- name: Add ansible user to docker group
+  user:
+    name: "{{ ansible_user }}"
+    groups: docker
+    append: yes
+  register: docker_group_added
+
+- name: Create base directory
+  file:
+    path: "{{ base_dir }}"
+    state: directory
+    owner: "{{ ansible_user }}"
+    group: "{{ ansible_user }}"
+    mode: '0755'
+
+- name: Create Docker network
+  community.docker.docker_network:
+    name: "{{ docker_network }}"
+    state: present
+  become_user: "{{ ansible_user }}"
+
+- name: Display group membership note
+  debug:
+    msg: "User {{ ansible_user }} added to docker group. You may need to log out and back in for group changes to take effect."
+  when: docker_group_added.changed

@@ -1,0 +1,121 @@
+# roles/exporters/tasks/main.yml
+---
+- name: Create exporters directory structure
+  file:
+    path: "{{ item }}"
+    state: directory
+    owner: "{{ ansible_user }}"
+    group: "{{ ansible_user }}"
+    mode: '0755'
+  loop:
+    - "{{ base_dir }}/exporters"
+    - "{{ base_dir }}/exporters/gpu_process_exporter"
+    - "{{ base_dir }}/exporters/disk_usage_exporter"
+    - "{{ base_dir }}/exporters/tmp_file_exporter"
+
+- name: Stop existing exporter containers first
+  community.docker.docker_container:
+    name: "{{ item }}"
+    state: absent
+  loop:
+    - cmstack_gpu_process_exporter
+    - cmstack_disk_usage_exporter
+    - cmstack_tmp_file_exporter
+    - cmstack_node_exporter
+  become_user: "{{ ansible_user }}"
+  ignore_errors: yes
+
+- name: Wait a moment for containers to fully stop
+  pause:
+    seconds: 3
+
+- name: Check if exporter ports are available
+  wait_for:
+    port: "{{ item }}"
+    host: "{{ ansible_default_ipv4.address }}"
+    state: stopped
+    timeout: 5
+  register: port_checks
+  failed_when: false
+  loop:
+    - "{{ exporter_ports.gpu }}"
+    - "{{ exporter_ports.disk }}"
+    - "{{ exporter_ports.tmp }}"
+    - "{{ node_exporter_port }}"
+
+- name: Fail if any exporter port is in use
+  fail:
+    msg: "Port {{ item.item }} is already in use on {{ ansible_default_ipv4.address }}. Check with: sudo lsof -i :{{ item.item }}"
+  when: item.failed
+  loop: "{{ port_checks.results }}"
+
+- name: Copy custom exporter projects to slave nodes
+  copy:
+    src: "{{ item.name }}/"
+    dest: "{{ base_dir }}/exporters/{{ item.name }}/"
+    owner: "{{ ansible_user }}"
+    group: "{{ ansible_user }}"
+    mode: preserve
+    directory_mode: '0755'
+  loop:
+    - { name: "gpu_process_exporter" }
+    - { name: "disk_usage_exporter" }
+    - { name: "tmp_file_exporter" }
+  register: copy_results
+
+- name: Display copy results
+  debug:
+    msg: "Copied {{ item.item.name }}: {{ 'changed' if item.changed else 'no changes' }}"
+  loop: "{{ copy_results.results }}"
+
+- name: Verify Dockerfiles exist for custom exporters
+  stat:
+    path: "{{ base_dir }}/exporters/{{ item }}/Dockerfile"
+  register: dockerfile_checks
+  loop:
+    - gpu_process_exporter
+    - disk_usage_exporter
+    - tmp_file_exporter
+
+- name: Fail if Dockerfiles are missing
+  fail:
+    msg: "Dockerfile missing for {{ item.item }} at {{ base_dir }}/exporters/{{ item.item }}/Dockerfile"
+  when: not item.stat.exists
+  loop: "{{ dockerfile_checks.results }}"
+
+- name: Generate exporters docker-compose file
+  template:
+    src: docker-compose.yml.j2
+    dest: "{{ base_dir }}/exporters/docker-compose.yml"
+    owner: "{{ ansible_user }}"
+    group: "{{ ansible_user }}"
+    mode: '0644'
+
+- name: Build and start exporter services
+  community.docker.docker_compose_v2:
+    project_src: "{{ base_dir }}/exporters"
+    build: always
+    state: present
+  become_user: "{{ ansible_user }}"
+
+- name: Wait for exporters to be ready
+  uri:
+    url: "http://{{ ansible_default_ipv4.address }}:{{ item }}/metrics"
+    method: GET
+  retries: 30
+  delay: 2
+  register: exporter_checks
+  ignore_errors: yes
+  loop:
+    - "{{ exporter_ports.gpu }}"
+    - "{{ exporter_ports.disk }}"
+    - "{{ exporter_ports.tmp }}"
+    - "{{ node_exporter_port }}"
+
+- name: Display exporter service status
+  debug:
+    msg:
+      - "GPU Process Exporter: http://{{ ansible_default_ipv4.address }}:{{ exporter_ports.gpu }}/metrics - {{ 'READY' if exporter_checks.results[0].status|default(0) == 200 else 'NOT READY' }}"
+      - "Disk Usage Exporter: http://{{ ansible_default_ipv4.address }}:{{ exporter_ports.disk }}/metrics - {{ 'READY' if exporter_checks.results[1].status|default(0) == 200 else 'NOT READY' }}"
+      - "Tmp File Exporter: http://{{ ansible_default_ipv4.address }}:{{ exporter_ports.tmp }}/metrics - {{ 'READY' if exporter_checks.results[2].status|default(0) == 200 else 'NOT READY' }}"
+      - "Node Exporter: http://{{ ansible_default_ipv4.address }}:{{ node_exporter_port }}/metrics - {{ 'READY' if exporter_checks.results[3].status|default(0) == 200 else 'NOT READY' }}"

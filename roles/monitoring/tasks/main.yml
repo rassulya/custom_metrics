@@ -1,0 +1,146 @@
+- name: Create monitoring directory structure
+  file:
+    path: "{{ item }}"
+    state: directory
+    owner: "{{ ansible_user }}"
+    group: "{{ ansible_user }}"
+    mode: '0755'
+  loop:
+    - "{{ base_dir }}/monitoring"
+    - "{{ base_dir }}/monitoring/prometheus"
+    - "{{ base_dir }}/monitoring/grafana"
+    - "{{ base_dir }}/monitoring/grafana/provisioning"
+    - "{{ base_dir }}/monitoring/grafana/provisioning/datasources"
+    - "{{ base_dir }}/monitoring/grafana/provisioning/dashboards"
+    - "{{ base_dir }}/monitoring/grafana/dashboards"
+
+- name: Stop existing monitoring containers
+  community.docker.docker_container:
+    name: "{{ item }}"
+    state: absent
+  loop:
+    - cmstack_grafana
+    - cmstack_prometheus
+  become_user: "{{ ansible_user }}"
+  ignore_errors: yes
+
+- name: Wait a moment for containers to fully stop
+  pause:
+    seconds: 5
+
+- name: Check if Grafana port is available
+  wait_for:
+    port: "{{ grafana_port }}"
+    host: "{{ ansible_default_ipv4.address }}"
+    state: stopped
+    timeout: 5
+  register: grafana_port_check
+  failed_when: false
+
+- name: Check if Prometheus port is available
+  wait_for:
+    port: "{{ prometheus_port }}"
+    host: "{{ ansible_default_ipv4.address }}"
+    state: stopped
+    timeout: 5
+  register: prometheus_port_check
+  failed_when: false
+
+- name: Fail if Grafana port is in use
+  fail:
+    msg: "Port {{ grafana_port }} is already in use on {{ ansible_default_ipv4.address }}. Please check what service is using this port with: sudo lsof -i :{{ grafana_port }}"
+  when: grafana_port_check.failed
+
+- name: Fail if Prometheus port is in use
+  fail:
+    msg: "Port {{ prometheus_port }} is already in use on {{ ansible_default_ipv4.address }}. Please check what service is using this port with: sudo lsof -i :{{ prometheus_port }}"
+  when: prometheus_port_check.failed
+
+- name: Generate Prometheus configuration
+  template:
+    src: prometheus.yml.j2
+    dest: "{{ base_dir }}/monitoring/prometheus/prometheus.yml"
+    owner: "{{ ansible_user }}"
+    group: "{{ ansible_user }}"
+    mode: '0644'
+
+- name: Generate Grafana datasource configuration
+  copy:
+    dest: "{{ base_dir }}/monitoring/grafana/provisioning/datasources/prometheus.yml"
+    content: |
+      apiVersion: 1
+      datasources:
+        - name: Prometheus
+          type: prometheus
+          access: proxy
+          url: http://cmstack_prometheus:9090
+          isDefault: true
+          editable: true
+    owner: "{{ ansible_user }}"
+    group: "{{ ansible_user }}"
+    mode: '0644'
+
+- name: Generate Grafana dashboard provisioning
+  copy:
+    dest: "{{ base_dir }}/monitoring/grafana/provisioning/dashboards/default.yml"
+    content: |
+      apiVersion: 1
+      providers:
+        - name: 'default'
+          orgId: 1
+          folder: ''
+          type: file
+          disableDeletion: false
+          editable: true
+          updateIntervalSeconds: 10
+          allowUiUpdates: true
+          options:
+            path: /etc/grafana/provisioning/dashboards
+    owner: "{{ ansible_user }}"
+    group: "{{ ansible_user }}"
+    mode: '0644'
+
+- name: Generate sample dashboard
+  template:
+    src: grafana-dashboard.json.j2
+    dest: "{{ base_dir }}/monitoring/grafana/dashboards/monitoring-overview.json"
+    owner: "{{ ansible_user }}"
+    group: "{{ ansible_user }}"
+    mode: '0644'
+
+- name: Generate monitoring docker-compose file
+  template:
+    src: docker-compose.yml.j2
+    dest: "{{ base_dir }}/monitoring/docker-compose.yml"
+    owner: "{{ ansible_user }}"
+    group: "{{ ansible_user }}"
+    mode: '0644'
+
+- name: Start monitoring services
+  community.docker.docker_compose_v2:
+    project_src: "{{ base_dir }}/monitoring"
+    state: present
+  become_user: "{{ ansible_user }}"
+
+- name: Wait for Prometheus to be ready
+  uri:
+    url: "http://{{ ansible_default_ipv4.address }}:{{ prometheus_port }}/-/ready"
+    method: GET
+  retries: 30
+  delay: 2
+  register: prometheus_ready
+
+- name: Wait for Grafana to be ready
+  uri:
+    url: "http://{{ ansible_default_ipv4.address }}:{{ grafana_port }}/api/health"
+    method: GET
+  retries: 30
+  delay: 2
+  register: grafana_ready
+
+- name: Display monitoring service status
+  debug:
+    msg:
+      - "Prometheus: http://{{ ansible_default_ipv4.address }}:{{ prometheus_port }} - {{ 'READY' if prometheus_ready.status == 200 else 'NOT READY' }}"
+      - "Grafana: http://{{ ansible_default_ipv4.address }}:{{ grafana_port }} - {{ 'READY' if grafana_ready.status == 200 else 'NOT READY' }}"
+      - "Login: {{ grafana_admin_user }} / {{ grafana_admin_password }}"

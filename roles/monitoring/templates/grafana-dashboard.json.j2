@@ -1,0 +1,74 @@
+{
+  "dashboard": {
+    "id": null,
+    "title": "Monitoring Overview",
+    "tags": ["monitoring", "exporters"],
+    "timezone": "browser",
+    "panels": [
+      {
+        "id": 1,
+        "title": "Custom Exporters Status",
+        "type": "stat",
+        "targets": [
+          {
+            "expr": "up{job=~\".*-(gpu-process|disk-usage|tmp-files)\"}",
+            "legendFormat": "{{ "{{job}}" }}",
+            "refId": "A"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "color": {
+              "mode": "palette-classic"
+            },
+            "custom": {
+              "displayMode": "list",
+              "orientation": "horizontal"
+            },
+            "mappings": [],
+            "thresholds": {
+              "steps": [
+                {"color": "red", "value": 0},
+                {"color": "green", "value": 1}
+              ]
+            }
+          }
+        },
+        "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0}
+      },
+      {
+        "id": 2,
+        "title": "Node Exporter Status",
+        "type": "stat",
+        "targets": [
+          {
+            "expr": "up{job=~\".*-node\"}",
+            "legendFormat": "{{ "{{instance}}" }}",
+            "refId": "B"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "color": {
+              "mode": "palette-classic"
+            },
+            "mappings": [],
+            "thresholds": {
+              "steps": [
+                {"color": "red", "value": 0},
+                {"color": "green", "value": 1}
+              ]
+            }
+          }
+        },
+        "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0}
+      }
+    ],
+    "time": {
+      "from": "now-5m",
+      "to": "now"
+    },
+    "refresh": "10s",
+    "version": 1
+  }
+}

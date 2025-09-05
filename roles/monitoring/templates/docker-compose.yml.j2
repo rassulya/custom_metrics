@@ -1,0 +1,61 @@
+networks:
+  {{ docker_network }}:
+    external: true
+
+services:
+  prometheus:
+    image: prom/prometheus:{{ prometheus_version }}
+    container_name: cmstack_prometheus
+    restart: unless-stopped
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+      - '--storage.tsdb.retention.time=200h'
+      - '--web.enable-lifecycle'
+      - '--web.listen-address=0.0.0.0:9090'
+    ports:
+      - "{{ prometheus_port }}:9090"
+    volumes:
+      - ./prometheus:/etc/prometheus
+      - prometheus_data:/prometheus
+    networks:
+      - {{ docker_network }}
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:9090/-/healthy"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+  grafana:
+    image: grafana/grafana:{{ grafana_version }}
+    container_name: cmstack_grafana
+    restart: unless-stopped
+    environment:
+      - GF_SECURITY_ADMIN_USER={{ grafana_admin_user }}
+      - GF_SECURITY_ADMIN_PASSWORD={{ grafana_admin_password }}
+      - GF_USERS_ALLOW_SIGN_UP=false
+    ports:
+      - "{{ grafana_port }}:3000"
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning
+      - ./grafana/dashboards:/etc/grafana/provisioning/dashboards
+    networks:
+      - {{ docker_network }}
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:3000/api/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    depends_on:
+      - prometheus
+
+volumes:
+  prometheus_data:
+    name: cmstack_prometheus_data
+  grafana_data:
+    name: cmstack_grafana_data

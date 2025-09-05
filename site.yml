@@ -1,0 +1,18 @@
+---
+- name: Deploy Monitoring Stack
+  hosts: all
+  become: yes
+  roles:
+    - docker_setup
+
+- name: Deploy Monitoring Services (Grafana + Prometheus)
+  hosts: master
+  become: yes
+  roles:
+    - monitoring
+
+- name: Deploy Custom Exporters
+  hosts: slaves
+  become: yes
+  roles:
+    - exporters
