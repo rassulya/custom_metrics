@@ -1,84 +1,96 @@
-version: '3.8'
-
 networks:
   {{ docker_network }}:
     external: true
 
 services:
+  disk_usage_exporter:
+      container_name: cmstack_disk_exporter
+      build:
+        context: ./disk_usage_exporter
+        dockerfile: Dockerfile
+      ports:
+        - "{{ exporter_ports.disk }}:{{ exporter_ports.disk }}"
+      networks:
+        - {{ docker_network }}
+      restart: unless-stopped
+      volumes:
+        - /home:/mnt/home:ro
+        - /raid:/mnt/raid:ro
+      healthcheck:
+        test: ["CMD", "curl", "-f", "http://localhost:{{ exporter_ports.disk }}/metrics"]
+        interval: 30s
+        timeout: 10s
+        retries: 3
+        start_period: 30s
+
   gpu_process_exporter:
+    container_name: cmstack_gpu_exporter
     build:
       context: ./gpu_process_exporter
       dockerfile: Dockerfile
-    container_name: cmstack_gpu_process_exporter
-    restart: unless-stopped
     ports:
       - "{{ exporter_ports.gpu }}:{{ exporter_ports.gpu }}"
     networks:
       - {{ docker_network }}
-    healthcheck:
-      test: ["CMD-SHELL", "curl -f http://localhost:{{ exporter_ports.gpu }}/metrics || exit 1"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 30s
-
-  disk_usage_exporter:
-    build:
-      context: ./disk_usage_exporter
-      dockerfile: Dockerfile
-    container_name: cmstack_disk_usage_exporter
     restart: unless-stopped
-    ports:
-      - "{{ exporter_ports.disk }}:{{ exporter_ports.disk }}"
+    privileged: true
     volumes:
-      - /:/host:ro
-    networks:
-      - {{ docker_network }}
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /dev:/dev:ro
+      - /usr/lib/x86_64-linux-gnu:/usr/lib/x86_64-linux-gnu:ro
+      - /usr/local/cuda/lib64:/usr/local/cuda/lib64:ro
+    environment:
+      - LD_LIBRARY_PATH=/usr/lib/x86_64-linux-gnu:/usr/local/cuda/lib64
+    devices:
+      - /dev/nvidia0:/dev/nvidia0
+      - /dev/nvidiactl:/dev/nvidiactl
+      - /dev/nvidia-uvm:/dev/nvidia-uvm
     healthcheck:
-      test: ["CMD-SHELL", "curl -f http://localhost:{{ exporter_ports.disk }}/metrics || exit 1"]
+      test: ["CMD", "curl", "-f", "http://localhost:{{ exporter_ports.gpu }}/metrics"]
       interval: 30s
       timeout: 10s
       retries: 3
       start_period: 30s
 
   tmp_file_exporter:
+    container_name: cmstack_tmp_exporter
     build:
       context: ./tmp_file_exporter
       dockerfile: Dockerfile
-    container_name: cmstack_tmp_file_exporter
-    restart: unless-stopped
     ports:
       - "{{ exporter_ports.tmp }}:{{ exporter_ports.tmp }}"
-    volumes:
-      - /tmp:/tmp:ro
     networks:
       - {{ docker_network }}
+    restart: unless-stopped
+    volumes:
+      - /tmp:/host/tmp:ro
     healthcheck:
-      test: ["CMD-SHELL", "curl -f http://localhost:{{ exporter_ports.tmp }}/metrics || exit 1"]
+      test: ["CMD", "curl", "-f", "http://localhost:{{ exporter_ports.tmp }}/metrics"]
       interval: 30s
       timeout: 10s
       retries: 3
       start_period: 30s
 
   node_exporter:
-    image: prom/node-exporter:{{ node_exporter_version }}
     container_name: cmstack_node_exporter
+    image: prom/node-exporter:latest
+    ports:
+      - "{{ node_exporter_port }}:9100"
+    networks:
+      - {{ docker_network }}
     restart: unless-stopped
     command:
       - '--path.procfs=/host/proc'
+      - '--path.rootfs=/rootfs'
       - '--path.sysfs=/host/sys'
       - '--collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)($$|/)'
-      - '--web.listen-address=0.0.0.0:9100'
-    ports:
-      - "{{ node_exporter_port }}:9100"
     volumes:
       - /proc:/host/proc:ro
       - /sys:/host/sys:ro
       - /:/rootfs:ro
-    networks:
-      - {{ docker_network }}
     healthcheck:
-      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:9100/metrics"]
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:9100/metrics"]
       interval: 30s
       timeout: 10s
       retries: 3
