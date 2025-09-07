@@ -1,0 +1,29 @@
+# roles/exporters/templates/node-exporter-compose.yml.j2
+networks:
+  {{ docker_network }}:
+    external: true
+
+services:
+  node_exporter:
+    container_name: cmstack_node_exporter
+    image: prom/node-exporter:latest
+    ports:
+      - "{{ node_exporter_port }}:9100"
+    networks:
+      - {{ docker_network }}
+    restart: unless-stopped
+    command:
+      - '--path.procfs=/host/proc'
+      - '--path.rootfs=/rootfs'
+      - '--path.sysfs=/host/sys'
+      - '--collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)($$|/)'
+    volumes:
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/rootfs:ro
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:9100/metrics"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s

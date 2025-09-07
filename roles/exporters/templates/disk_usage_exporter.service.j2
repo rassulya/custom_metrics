@@ -1,0 +1,28 @@
+[Unit]
+Description=Disk Usage Exporter
+After=network.target
+Wants=network.target
+
+[Service]
+Type=simple
+User={{ ansible_user }}
+Group={{ ansible_user }}
+ExecStart={{ base_dir }}/exporters/bin/disk_usage_exporter
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=disk-usage-exporter
+Environment=RUST_LOG=info
+Environment=BIND_ADDRESS=0.0.0.0:{{ exporter_ports.disk }}
+Environment=MOUNT_PATHS=/home,/raid
+
+# Security settings
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths={{ base_dir }}/exporters /var/log/cmstack
+ReadOnlyPaths=/home /raid
+
+[Install]
+WantedBy=multi-user.target

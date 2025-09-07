@@ -1,4 +1,4 @@
-# roles/exporters/tasks/main.yml
+# roles/exporters/tasks/main.yml - Fixed version
 ---
 - name: Create exporters directory structure
   file:
@@ -12,22 +12,82 @@
     - "{{ base_dir }}/exporters/gpu_process_exporter"
     - "{{ base_dir }}/exporters/disk_usage_exporter"
     - "{{ base_dir }}/exporters/tmp_file_exporter"
+    - "{{ base_dir }}/exporters/bin"
+    - "/var/log/cmstack"
 
-- name: Stop existing exporter containers first
+- name: Stop existing Docker exporter containers
   community.docker.docker_container:
     name: "{{ item }}"
     state: absent
   loop:
-    - cmstack_gpu_process_exporter
-    - cmstack_disk_usage_exporter
-    - cmstack_tmp_file_exporter
-    - cmstack_node_exporter
+    - cmstack_gpu_exporter
+    - cmstack_disk_exporter
+    - cmstack_tmp_exporter
   become_user: "{{ ansible_user }}"
   ignore_errors: yes
 
-- name: Wait a moment for containers to fully stop
-  pause:
-    seconds: 3
+- name: Stop existing native exporter services
+  systemd:
+    name: "{{ item }}"
+    state: stopped
+    enabled: no
+  loop:
+    - cmstack-gpu-exporter
+    - cmstack-disk-exporter
+    - cmstack-tmp-exporter
+  ignore_errors: yes
+
+- name: Install and validate Rust toolchain
+  block:
+    - name: Check if Rust is properly installed and accessible
+      shell: |
+        export PATH="$HOME/.cargo/bin:$PATH"
+        rustc --version && cargo --version
+      register: rust_check
+      failed_when: false
+      changed_when: false
+      become_user: "{{ ansible_user }}"
+
+    - name: Display current Rust status
+      debug:
+        msg: "Rust check result: {{ 'FOUND' if rust_check.rc == 0 else 'NOT FOUND' }}"
+
+    - name: Install Rust toolchain
+      shell: |
+        curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+      args:
+        executable: /bin/bash
+      become_user: "{{ ansible_user }}"
+      when: rust_check.rc != 0
+
+    - name: Ensure Cargo is in PATH for all sessions
+      lineinfile:
+        path: "/home/{{ ansible_user }}/.bashrc"
+        line: 'export PATH="$HOME/.cargo/bin:$PATH"'
+        create: yes
+        backup: yes
+
+    - name: Validate Rust installation after setup
+      shell: |
+        export PATH="$HOME/.cargo/bin:$PATH"
+        rustc --version
+        cargo --version
+      register: rust_final_validation
+      become_user: "{{ ansible_user }}"
+      retries: 3
+      delay: 2
+
+    - name: Display final Rust toolchain status
+      debug:
+        msg: 
+          - "Rust validation successful!"
+          - "{{ rust_final_validation.stdout_lines[0] }}"
+          - "{{ rust_final_validation.stdout_lines[1] }}"
+
+    - name: Fail if Rust is still not working
+      fail:
+        msg: "Rust toolchain installation failed. Please check the system manually."
+      when: rust_final_validation.rc != 0
 
 - name: Check if exporter ports are available
   wait_for:
@@ -49,7 +109,7 @@
   when: item.failed
   loop: "{{ port_checks.results }}"
 
-- name: Copy custom exporter projects to slave nodes
+- name: Copy custom exporter source code to slave nodes
   copy:
     src: "{{ item.name }}/"
     dest: "{{ base_dir }}/exporters/{{ item.name }}/"
@@ -61,42 +121,156 @@
     - { name: "gpu_process_exporter" }
     - { name: "disk_usage_exporter" }
     - { name: "tmp_file_exporter" }
-  register: copy_results
 
-- name: Display copy results
-  debug:
-    msg: "Copied {{ item.item.name }}: {{ 'changed' if item.changed else 'no changes' }}"
-  loop: "{{ copy_results.results }}"
+- name: Build and deploy Rust exporters
+  block:
+    - name: Verify exporter source code exists
+      stat:
+        path: "{{ base_dir }}/exporters/{{ item }}/Cargo.toml"
+      register: cargo_files
+      loop:
+        - gpu_process_exporter
+        - disk_usage_exporter
+        - tmp_file_exporter
 
-- name: Verify Dockerfiles exist for custom exporters
-  stat:
-    path: "{{ base_dir }}/exporters/{{ item }}/Dockerfile"
-  register: dockerfile_checks
+    - name: List missing source code
+      debug:
+        msg: "Missing Cargo.toml for: {{ item.item }}"
+      when: not item.stat.exists
+      loop: "{{ cargo_files.results }}"
+
+    - name: Fail if any source code is missing
+      fail:
+        msg: "Missing source code. Please ensure all exporter projects have Cargo.toml files."
+      when: cargo_files.results | selectattr('stat.exists', 'equalto', false) | list | length > 0
+
+    - name: Build Rust exporters with validation
+      shell: |
+        export PATH="$HOME/.cargo/bin:$PATH"
+        cd {{ base_dir }}/exporters/{{ item }}/
+        echo "Building {{ item }}..."
+        cargo build --release
+        if [ $? -eq 0 ]; then
+          echo "Build successful for {{ item }}"
+          cp target/release/{{ item }} {{ base_dir }}/exporters/bin/
+          echo "Binary copied to bin directory"
+        else
+          echo "Build failed for {{ item }}"
+          exit 1
+        fi
+      become_user: "{{ ansible_user }}"
+      loop:
+        - gpu_process_exporter
+        - disk_usage_exporter
+        - tmp_file_exporter
+      register: build_results
+
+    - name: Display build results
+      debug:
+        msg: 
+          - "Exporter: {{ item.item }}"
+          - "Status: {{ 'SUCCESS' if item.rc == 0 else 'FAILED' }}"
+          - "Output: {{ item.stdout_lines[-3:] | default(['No output']) | join(' | ') }}"
+      loop: "{{ build_results.results }}"
+
+    - name: Verify binaries were created
+      stat:
+        path: "{{ base_dir }}/exporters/bin/{{ item }}"
+      register: binary_checks
+      loop:
+        - gpu_process_exporter
+        - disk_usage_exporter
+        - tmp_file_exporter
+
+    - name: List binary status
+      debug:
+        msg: "Binary {{ item.item }}: {{ 'EXISTS' if item.stat.exists else 'MISSING' }}"
+      loop: "{{ binary_checks.results }}"
+
+    - name: Fail if any binaries are missing
+      fail:
+        msg: "Some binaries failed to build. Check the build output above."
+      when: binary_checks.results | selectattr('stat.exists', 'equalto', false) | list | length > 0
+
+- name: Create systemd service files for exporters
+  template:
+    src: "{{ item }}.service.j2"
+    dest: "/etc/systemd/system/cmstack-{{ item | replace('_', '-') }}.service"
+    mode: '0644'
   loop:
     - gpu_process_exporter
     - disk_usage_exporter
     - tmp_file_exporter
+  notify: reload systemd
 
-- name: Fail if Dockerfiles are missing
-  fail:
-    msg: "Dockerfile missing for {{ item.item }} at {{ base_dir }}/exporters/{{ item.item }}/Dockerfile"
-  when: not item.stat.exists
-  loop: "{{ dockerfile_checks.results }}"
-
-- name: Generate exporters docker-compose file
+- name: Create Node Exporter Docker compose file
   template:
-    src: docker-compose.yml.j2
+    src: node-exporter-compose.yml.j2
     dest: "{{ base_dir }}/exporters/docker-compose.yml"
     owner: "{{ ansible_user }}"
     group: "{{ ansible_user }}"
     mode: '0644'
 
-- name: Build and start exporter services
+- name: Start Node Exporter in Docker
   community.docker.docker_compose_v2:
     project_src: "{{ base_dir }}/exporters"
-    build: always
     state: present
   become_user: "{{ ansible_user }}"
+
+- name: Start and validate native exporter services
+  block:
+    - name: Start and enable native exporter services
+      systemd:
+        name: "cmstack-{{ item | replace('_', '-') }}"
+        state: started
+        enabled: yes
+        daemon_reload: yes
+      loop:
+        - gpu_process_exporter
+        - disk_usage_exporter
+        - tmp_file_exporter
+      register: service_starts
+
+    - name: Wait for services to initialize
+      pause:
+        seconds: 5
+
+    - name: Check service status
+      systemd:
+        name: "cmstack-{{ item | replace('_', '-') }}"
+      register: service_status
+      loop:
+        - gpu_process_exporter
+        - disk_usage_exporter
+        - tmp_file_exporter
+
+    - name: Display service status
+      debug:
+        msg: "Service cmstack-{{ item.item | replace('_', '-') }}: {{ item.status.ActiveState }}"
+      loop: "{{ service_status.results }}"
+
+    - name: Check for failed services
+      debug:
+        msg: "FAILED SERVICE: cmstack-{{ item.item | replace('_', '-') }} - Check logs with: sudo journalctl -u cmstack-{{ item.item | replace('_', '-') }} -n 20"
+      when: item.status.ActiveState != "active"
+      loop: "{{ service_status.results }}"
+
+    - name: Test if ports are responding
+      wait_for:
+        port: "{{ item.port }}"
+        host: "{{ ansible_default_ipv4.address }}"
+        timeout: 10
+      register: port_tests
+      failed_when: false
+      loop:
+        - { name: "gpu", port: "{{ exporter_ports.gpu }}" }
+        - { name: "disk", port: "{{ exporter_ports.disk }}" }
+        - { name: "tmp", port: "{{ exporter_ports.tmp }}" }
+
+    - name: Display port test results
+      debug:
+        msg: "Port {{ item.item.port }} ({{ item.item.name }}): {{ 'OPEN' if not item.failed else 'CLOSED' }}"
+      loop: "{{ port_tests.results }}"
 
 - name: Wait for exporters to be ready
   uri:
@@ -115,7 +289,7 @@
 - name: Display exporter service status
   debug:
     msg:
-      - "GPU Process Exporter: http://{{ ansible_default_ipv4.address }}:{{ exporter_ports.gpu }}/metrics - {{ 'READY' if exporter_checks.results[0].status|default(0) == 200 else 'NOT READY' }}"
-      - "Disk Usage Exporter: http://{{ ansible_default_ipv4.address }}:{{ exporter_ports.disk }}/metrics - {{ 'READY' if exporter_checks.results[1].status|default(0) == 200 else 'NOT READY' }}"
-      - "Tmp File Exporter: http://{{ ansible_default_ipv4.address }}:{{ exporter_ports.tmp }}/metrics - {{ 'READY' if exporter_checks.results[2].status|default(0) == 200 else 'NOT READY' }}"
-      - "Node Exporter: http://{{ ansible_default_ipv4.address }}:{{ node_exporter_port }}/metrics - {{ 'READY' if exporter_checks.results[3].status|default(0) == 200 else 'NOT READY' }}"
+      - "GPU Process Exporter (Native): http://{{ ansible_default_ipv4.address }}:{{ exporter_ports.gpu }}/metrics - {{ 'READY' if exporter_checks.results[0].status|default(0) == 200 else 'NOT READY' }}"
+      - "Disk Usage Exporter (Native): http://{{ ansible_default_ipv4.address }}:{{ exporter_ports.disk }}/metrics - {{ 'READY' if exporter_checks.results[1].status|default(0) == 200 else 'NOT READY' }}"
+      - "Tmp File Exporter (Native): http://{{ ansible_default_ipv4.address }}:{{ exporter_ports.tmp }}/metrics - {{ 'READY' if exporter_checks.results[2].status|default(0) == 200 else 'NOT READY' }}"
+      - "Node Exporter (Docker): http://{{ ansible_default_ipv4.address }}:{{ node_exporter_port }}/metrics - {{ 'READY' if exporter_checks.results[3].status|default(0) == 200 else 'NOT READY' }}"

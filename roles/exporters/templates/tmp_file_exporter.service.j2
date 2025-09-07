@@ -1,0 +1,28 @@
+[Unit]
+Description=Tmp File Exporter
+After=network.target
+Wants=network.target
+
+[Service]
+Type=simple
+User={{ ansible_user }}
+Group={{ ansible_user }}
+ExecStart={{ base_dir }}/exporters/bin/tmp_file_exporter
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=tmp-file-exporter
+Environment=RUST_LOG=info
+Environment=BIND_ADDRESS=0.0.0.0:{{ exporter_ports.tmp }}
+Environment=TMP_PATH=/tmp
+
+# Security settings
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths={{ base_dir }}/exporters /var/log/cmstack
+ReadOnlyPaths=/tmp
+
+[Install]
+WantedBy=multi-user.target
